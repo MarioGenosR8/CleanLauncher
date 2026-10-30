@@ -82,7 +82,7 @@ public class SetupActivity extends Activity {
         name = new EditText(this);
         name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
         name.setText(Profile.name(this));
-        name.setHint("Ej.: Ana");
+        name.setHint("Ej.: Mario");
         name.setTextColor(Color.WHITE);
         name.setHintTextColor(0x66FFFFFF);
         name.setTextSize(20);
@@ -109,7 +109,7 @@ public class SetupActivity extends Activity {
         card.addView(tip);
 
         voice = toggle(card, "Saludo por voz al encender el carro", Profile.voiceEnabled(this));
-        picoPlaca = toggle(card, "Recordar pico y placa los miércoles (Quito)", Profile.picoPlacaEnabled(this));
+        picoPlaca = toggle(card, "Recordar Hoy No Circula (Jueves, 1er y 3er Sábado)", Profile.picoPlacaEnabled(this));
         showPhoto();
         return card;
     }
@@ -253,7 +253,7 @@ public class SetupActivity extends Activity {
     }
 
     private static String check(boolean ok) {
-        return ok ? "✓  " : "→  ";
+        return ok ? "✓  " : "→  " : "";
     }
 
     private void finishSetup() {
