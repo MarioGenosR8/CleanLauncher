@@ -14,7 +14,7 @@ final class Speech {
 
     static String text(Context c, List<String> clips) {
         String name = Profile.name(c);
-        String who = name.isEmpty() ? "" : ", " + name;
+        String who = name.isEmpty() ? "Mario" : name;
         StringBuilder sb = new StringBuilder();
         for (String clip : clips) {
             String part = phrase(clip, who);
@@ -25,17 +25,26 @@ final class Speech {
 
     private static String phrase(String clip, String who) {
         switch (clip) {
-            case "v_greet_morning": return "¡Buenos días" + who + "! Bienvenido.";
-            case "v_greet_afternoon": return "¡Buenas tardes" + who + "! Bienvenido.";
-            case "v_greet_night": return "¡Buenas noches" + who + "! Bienvenido.";
-            case "v_greet_monday": return "¡Hola" + who + "! Arrancó la semana: hoy es lunes.";
-            case "v_maintenance": return "Revisa el aceite, el agua del radiador y el líquido de frenos.";
-            case "v_seatbelt": return "Ponte el cinturón de seguridad.";
-            case "v_picoplaca": return "Hoy es miércoles: recuerda el pico y placa.";
-            case "v_careful": return "Maneja con cuidado. ¡Buen viaje!";
-            case "v_oil_soon": return "Se acerca el cambio de aceite: quedan menos de quinientos kilómetros.";
-            case "v_oil_due": return "Ya toca el cambio de aceite.";
-            default: break;
+            case "v_greet_morning":
+            case "v_greet_afternoon":
+            case "v_greet_night":
+                return "¡Hola " + who + "! Bienvenido, buen viaje.";
+            case "v_greet_monday":
+                return "¡Hola " + who + "! Bienvenido, buen viaje. Arrancó la semana: hoy es lunes.";
+            case "v_maintenance":
+                return "Revisa el aceite, el agua del radiador y el líquido de frenos.";
+            case "v_seatbelt":
+                return "Ponte el cinturón de seguridad.";
+            case "v_picoplaca":
+                return "No circulas todos los jueves y el primer y tercer sábado de cada mes.";
+            case "v_careful":
+                return "Maneja con cuidado.";
+            case "v_oil_soon":
+                return "Se acerca el cambio de aceite: quedan menos de quinientos kilómetros.";
+            case "v_oil_due":
+                return "Ya toca el cambio de aceite.";
+            default:
+                break;
         }
         if (clip.startsWith("v_cond_")) return condition(clip.substring(7));
         if (clip.startsWith("v_temp_")) {
