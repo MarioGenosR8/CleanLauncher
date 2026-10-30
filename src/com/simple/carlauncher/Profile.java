@@ -8,11 +8,6 @@ import android.graphics.BitmapFactory;
 
 import java.io.File;
 
-/**
- * Per-user settings so the launcher can be shared: driver name, own car photo and which
- * reminders to speak. Also detects whether the head unit is an NWD one (factory radio,
- * Bluetooth and sound services available) so NWD-only features can be hidden elsewhere.
- */
 final class Profile {
 
     private Profile() { }
@@ -22,7 +17,7 @@ final class Profile {
     }
 
     static String name(Context c) {
-        return prefs(c).getString("name", "").trim();
+        return prefs(c).getString("name", "Mario").trim();
     }
 
     static boolean voiceEnabled(Context c) {
@@ -30,14 +25,14 @@ final class Profile {
     }
 
     static boolean picoPlacaEnabled(Context c) {
-        return prefs(c).getBoolean("picoplaca", false);
+        return prefs(c).getBoolean("picoplaca", true);
     }
 
     static boolean isSetupDone(Context c) {
-        return prefs(c).getBoolean("setup_done", false);
+        return prefs(c).getBoolean("setup_done", true);
     }
 
-    /** "Hola, Ana" or just "Hola". */
+    /** "Hola, Mario" or just "Hola". */
     static String hello(Context c) {
         String n = name(c);
         return n.isEmpty() ? "Hola" : "Hola, " + n;
