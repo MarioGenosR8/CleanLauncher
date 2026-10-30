@@ -17,21 +17,12 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
 
-/**
- * Spoken welcome ~20 s after the car is switched on: greeting, current weather,
- * seat-belt reminder, "pico y placa" on Wednesdays and "drive carefully".
- *
- * The phrases are pre-rendered clips (res/raw/v_*.mp3) because the head unit has no
- * text-to-speech engine. The launcher is listed in /nwdappconfig/app/NaviSound.ini so the
- * NWD kernel mixes this audio over the radio/music like navigation prompts.
- */
 public class GreeterService extends Service {
 
     private static final String TAG = "Greeter";
     private static final long DELAY_MS = 20_000;
-    private static final long MIN_INTERVAL_MS = 60_000; // only skip duplicate wake signals
+    private static final long MIN_INTERVAL_MS = 60_000;
 
-    // MCU source ids (ApplicationList.xml "Source") of the last audio source before ACC off.
     private static final int SRC_RADIO = 4, SRC_BT = -125, SRC_USB = -128;
 
     private final Handler handler = new Handler();
@@ -48,17 +39,15 @@ public class GreeterService extends Service {
         radio.bind(this);
         sound.bind(this, () -> handler.post(() -> EqAuto.apply(this, sound)));
         IntentFilter f = new IntentFilter();
-        f.addAction("com.nwd.action.ACTION_CHANGE_SOURCE");      // auto EQ: radio vs music curve
-        f.addAction("com.nwd.action.ACTION_VOLUME_STATE_CHANGE"); // auto EQ: loudness
-        f.addAction("com.nwd.action.ACTION_MCU_STATE_CHANGE"); // ACC off (3) / on (1)
+        f.addAction("com.nwd.action.ACTION_CHANGE_SOURCE");
+        f.addAction("com.nwd.action.ACTION_VOLUME_STATE_CHANGE");
+        f.addAction("com.nwd.action.ACTION_MCU_STATE_CHANGE");
         f.addAction("com.bt.ACTION_A2DP_ESTABLISHED");
         f.addAction("com.bt.ACTION_AVRCP_ESTABLISHED");
         f.addAction("com.bt.ACTION_BT_MUSIC_PLAY");
         f.addAction("com.bt.ACTION_BT_MUSIC_PAUSE");
-        f.addAction("com.simple.carlauncher.TEST_CAR_ON"); // adb test hook
+        f.addAction("com.simple.carlauncher.TEST_CAR_ON");
         registerReceiver(events, f);
-        // Right after boot, bring the last source back and greet. A plain restart of this app
-        // (update, crash) must not touch the audio.
         if (android.os.SystemClock.elapsedRealtime() < 3 * 60_000) {
             handler.postDelayed(this::restoreAudio, 4000);
             schedule();
@@ -92,9 +81,6 @@ public class GreeterService extends Service {
             } else if ("com.bt.ACTION_BT_MUSIC_PAUSE".equals(a)) {
                 btPlaying = false;
             } else if ("com.bt.ACTION_BT_MUSIC_PLAY".equals(a)) {
-                // The phone *started* music (paused -> playing): make Bluetooth the source so the
-                // radio stops instead of both playing. The phone repeats PLAY while streaming, so
-                // react only to the transition, and never right after the user picked the radio.
                 waitingForPhone = false;
                 boolean started = !btPlaying;
                 btPlaying = true;
@@ -104,19 +90,12 @@ public class GreeterService extends Service {
                     Ui.selectBluetooth(GreeterService.this);
                 }
             } else if (waitingForPhone) {
-                // Phone connected after ACC on: resume Bluetooth music.
                 waitingForPhone = false;
                 handler.postDelayed(() -> startBluetoothMusic(), 2500);
             }
         }
     };
 
-    // ---------- Keep the audio source across ACC off/on ----------
-
-    /**
-     * The NWD kernel restores the foreground app on ACC on. With this launcher in front that is
-     * "no source", so the radio/BT would stay silent. Remember the real source ourselves.
-     */
     private void onCarOff() {
         int src = android.provider.Settings.System.getInt(getContentResolver(), "mcu_current_source", 0);
         NowPlaying np = NowPlaying.get(this);
@@ -132,18 +111,18 @@ public class GreeterService extends Service {
     }
 
     private void restoreAudio() {
-        if (!Profile.isNwd(this)) return; // NWD source handling only
+        if (!Profile.isNwd(this)) return;
         int src = prefs().getInt("last_source",
                 android.provider.Settings.System.getInt(getContentResolver(), "mcu_current_source", 0));
         Log.d(TAG, "restore audio source=" + src);
         if (NowPlaying.get(this).track(NowPlaying.Source.BT).playing) {
-            Ui.selectBluetooth(this); // phone already playing: keep Bluetooth
+            Ui.selectBluetooth(this);
         } else if (src == SRC_RADIO) {
             Ui.selectRadio(this, radio);
-            Ui.userChoseRadioAt = 0; // automatic restore: a phone that starts playing may still take over
+            Ui.userChoseRadioAt = 0;
         } else if (src == SRC_BT) {
             if (NowPlaying.get(this).btClient.isPhoneConnected()) startBluetoothMusic();
-            else waitingForPhone = true; // wait for the phone to connect
+            else waitingForPhone = true;
         } else if (src == SRC_USB) {
             Ui.requestSource(this, Ui.SOURCE_MUSIC);
         }
@@ -161,16 +140,14 @@ public class GreeterService extends Service {
         if (System.currentTimeMillis() - last < MIN_INTERVAL_MS) return;
         handler.removeCallbacks(greet);
         handler.postDelayed(greet, DELAY_MS);
-        Weather.fetch(this, w -> { }); // refresh the cache before speaking
+        Weather.fetch(this, w -> { });
     }
 
     private final Runnable greet = () -> {
         if (!Profile.voiceEnabled(this)) return;
         prefs().edit().putLong("last_greet", System.currentTimeMillis()).apply();
         List<String> clips = buildMessage();
-        // Owner's build ships recorded clips; shared builds speak with the device's TTS engine.
-        if (getResources().getIdentifier("v_careful", "raw", getPackageName()) != 0) speak(clips);
-        else speakTts(Speech.text(this, clips));
+        speakTts(Speech.text(this, clips));
     };
 
     private android.speech.tts.TextToSpeech tts;
@@ -179,7 +156,8 @@ public class GreeterService extends Service {
         if (tts != null) tts.shutdown();
         tts = new android.speech.tts.TextToSpeech(this, status -> {
             if (status != android.speech.tts.TextToSpeech.SUCCESS) return;
-            java.util.Locale es = new java.util.Locale("es", "US");
+            java.util.Locale es = new java.util.Locale("es", "MX");
+            if (tts.isLanguageAvailable(es) < 0) es = new java.util.Locale("es", "US");
             if (tts.isLanguageAvailable(es) < 0) es = new java.util.Locale("es");
             tts.setLanguage(es);
             Bundle params = new Bundle();
@@ -191,9 +169,9 @@ public class GreeterService extends Service {
         List<String> clips = new ArrayList<>();
         Calendar now = Calendar.getInstance();
         int day = now.get(Calendar.DAY_OF_WEEK);
+        int weekOfMonth = now.get(Calendar.DAY_OF_MONTH - 1) / 7 + 1;
         int h = now.get(Calendar.HOUR_OF_DAY);
 
-        // Monday: "¡Hola, papacito! Hoy es lunes." Other days: greeting by time of day.
         if (day == Calendar.MONDAY) clips.add("v_greet_monday");
         else clips.add(h < 12 ? "v_greet_morning" : h < 19 ? "v_greet_afternoon" : "v_greet_night");
 
@@ -203,16 +181,22 @@ public class GreeterService extends Service {
             int t = Math.max(-5, Math.min(40, w.temp));
             clips.add(t < 0 ? "v_temp_m" + (-t) : "v_temp_" + t);
         }
-        if (day == Calendar.MONDAY) clips.add("v_maintenance"); // oil, radiator, brake fluid
+        if (day == Calendar.MONDAY) clips.add("v_maintenance");
         if (Odometer.isConfigured(this)) {
             int left = Odometer.remainingKm(this);
             if (left < 0) clips.add("v_oil_due");
             else if (left <= Odometer.WARN_KM) clips.add("v_oil_soon");
         }
         clips.add("v_seatbelt");
-        if (day == Calendar.WEDNESDAY && Profile.picoPlacaEnabled(this)) {
-            clips.add("v_picoplaca"); // Quito: 6:00-9:30, 16:00-20:00
+
+        // Hoy No Circula: Jueves y 1er / 3er Sábado del mes
+        int nthSaturday = (now.get(Calendar.DAY_OF_MONTH) - 1) / 7 + 1;
+        boolean isNoCirculaDay = (day == Calendar.THURSDAY)
+                || (day == Calendar.SATURDAY && (nthSaturday == 1 || nthSaturday == 3));
+        if (isNoCirculaDay && Profile.picoPlacaEnabled(this)) {
+            clips.add("v_picoplaca");
         }
+
         clips.add("v_careful");
         return clips;
     }
@@ -231,7 +215,6 @@ public class GreeterService extends Service {
         return "cloudy";
     }
 
-    /** Plays the clips one after another. */
     void speak(List<String> clips) {
         queue.clear();
         for (String name : clips) {
@@ -290,7 +273,6 @@ public class GreeterService extends Service {
         return null;
     }
 
-    /** Starts the service at boot even if the launcher is not shown yet. */
     public static class BootReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context c, Intent i) {
