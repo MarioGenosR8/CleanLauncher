@@ -22,7 +22,6 @@ import java.util.Calendar;
 
 public class MainActivity extends Activity implements NowPlaying.Listener {
 
-
     private static final String MAPS = "com.google.android.apps.maps/com.google.android.maps.MapsActivity";
     private static final String EQ = "com.nwd.audioset/.home_horizontalActivity";
     private static final String SETTINGS = "com.android.car.setting/.home_horizontalActivity";
@@ -80,7 +79,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         nowPlaying = NowPlaying.get(this);
         createdDark = Ui.isDark(this);
         createdProfile = profileStamp();
-        // Shared installs: ask for name, car photo and permissions on first start.
         if (!Profile.isSetupDone(this) && Profile.bundledCar(this, false) == 0) {
             startActivity(new Intent(this, SetupActivity.class));
         }
@@ -109,8 +107,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         greeting.setPadding(0, dp(4), 0, 0);
         card.addView(greeting);
 
-        // The user's own car (photo with background removed); headlights glow when the car's lights are on.
-        // Own photo (shared builds) > bundled car with lights-on variant (owner's build) > icon.
         FrameLayout carBox = new FrameLayout(this);
         car = new ImageView(this);
         car.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -138,7 +134,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         clp.setMargins(dp(30), dp(8), dp(30), dp(8));
         card.addView(carBox, clp);
 
-        // Compact weather row: icon + temperature + description, leaving room for the car.
         LinearLayout now = new LinearLayout(this);
         now.setGravity(Gravity.CENTER_VERTICAL);
         weatherIcon = new ImageView(this);
@@ -181,7 +176,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
     private void updateGreeting() {
         int h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
         greeting.setText((h < 12 ? "Buenos días" : h < 19 ? "Buenas tardes" : "Buenas noches")
-                + " · Bienvenido");
+                + " · Bienvenido, buen viaje");
     }
 
     private void showWeather(Weather w) {
@@ -221,19 +216,16 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         public void onReceive(android.content.Context c, Intent i) {
             android.util.Log.d("CarLights", "ILL broadcast extras=" + i.getExtras());
             showCarLights(i.getByteExtra("extra_ill_state", (byte) 0) != 0);
-            // Auto theme follows the car's lights; give the kernel a moment to store the state.
             handler.postDelayed(() -> { if (Ui.isDark(MainActivity.this) != createdDark) recreate(); }, 1500);
         }
     };
 
-    /** The kernel keeps the light state as bit 2 of mcu_no_source_device_state. */
     private boolean carLightsOn() {
         int state = android.provider.Settings.System.getInt(getContentResolver(), "mcu_no_source_device_state", 0);
         return (state & 2) != 0;
     }
 
     private void showCarLights(boolean on) {
-        // Cross-fade between the "lights off" and "lights on" photos.
         if (!hasLightsImage) return;
         carLights.animate().alpha(on ? 1f : 0f).setDuration(600).start();
         car.animate().alpha(on ? 0f : 1f).setDuration(600).start();
@@ -277,7 +269,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         date.setGravity(Gravity.CENTER);
         card.addView(date);
 
-        // Oil-change status pill; opens the oil screen.
         oilInfo = Ui.text(this, "", 13, Color.WHITE);
         oilInfo.setPadding(dp(14), dp(6), dp(14), dp(6));
         oilBg = new GradientDrawable();
@@ -313,11 +304,13 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         head.addView(fmBand);
         card.addView(head);
 
+        boolean isNwd = Profile.isNwd(this);
+
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER);
         row.addView(Ui.iconButton(this, R.drawable.ic_prev, 52, false, () -> stationStep(false)),
                 new LinearLayout.LayoutParams(dp(52), dp(52)));
-        fmFreq = Ui.text(this, "--.-", 50, Color.WHITE);
+        fmFreq = Ui.text(this, isNwd ? "--.-" : "FM", 50, Color.WHITE);
         fmFreq.setTypeface(Typeface.DEFAULT_BOLD);
         row.addView(fmFreq, new LinearLayout.LayoutParams(0, -2, 1f));
         row.addView(Ui.iconButton(this, R.drawable.ic_next, 52, false, () -> stationStep(true)),
@@ -325,7 +318,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         row.setPadding(dp(12), dp(10), dp(12), 0);
         card.addView(row, new LinearLayout.LayoutParams(-1, -2));
 
-        fmUnit = Ui.text(this, "MHz", 15, 0x99FFFFFF);
+        fmUnit = Ui.text(this, isNwd ? "MHz" : "Toca para abrir", 15, 0x99FFFFFF);
         card.addView(fmUnit);
 
         Ui.pressable(card, 0.97f);
@@ -339,7 +332,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
             return;
         }
         if (!Ui.radioIsSource(this)) {
-            Ui.selectRadio(this, radio); // first tap from Bluetooth: bring the radio back
+            Ui.selectRadio(this, radio);
             handler.postDelayed(this::updateRadio, 2500);
             return;
         }
@@ -473,12 +466,12 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
 
     private void openRadio() {
         if (Profile.isNwd(this)) startActivity(new Intent(this, RadioActivity.class));
-        else if (!launchByKeyword("radio", "fm", "tuner")) toast("No se encontró una app de radio");
+        else if (!launchByKeyword("radio", "fm", "tuner", "jancar")) toast("No se encontró una app de radio");
     }
 
     private void openBluetooth() {
         if (Profile.isNwd(this)) startActivity(new Intent(this, BtActivity.class));
-        else if (!launchByKeyword("bluetooth", "bt music", "btmusic", "phone link"))
+        else if (!launchByKeyword("bluetooth", "bt music", "btmusic", "phone link", "bphone", "bt"))
             safeStart(new Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS));
     }
 
@@ -488,7 +481,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
             return;
         }
         Intent eq = new Intent(android.media.audiofx.AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL);
-        if (!safeStart(eq) && !launchByKeyword("ecualiz", "equaliz", "audio", "sonido", "dsp"))
+        if (!safeStart(eq) && !launchByKeyword("ecualiz", "equaliz", "audio", "sonido", "dsp", "sound"))
             toast("No se encontró un ecualizador");
     }
 
@@ -504,7 +497,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         }
     }
 
-    /** Opens the first installed app whose name or package matches one of the keywords. */
     private boolean launchByKeyword(String... keywords) {
         PackageManager pm = getPackageManager();
         Intent main = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
@@ -553,7 +545,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
     protected void onResume() {
         super.onResume();
         if (Ui.isDark(this) != createdDark || !profileStamp().equals(createdProfile)) {
-            // theme (setting, night or car lights) or profile (name, car photo) changed
             recreate();
             return;
         }
