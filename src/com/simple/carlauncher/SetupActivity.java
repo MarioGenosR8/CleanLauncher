@@ -253,7 +253,7 @@ public class SetupActivity extends Activity {
     }
 
     private static String check(boolean ok) {
-        return ok ? "✓  " : "→  " : "";
+        return ok ? "✓  " : "→  ";
     }
 
     private void finishSetup() {
