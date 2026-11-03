@@ -30,7 +30,7 @@ import java.util.List;
 
 public class MainActivity extends Activity implements NowPlaying.Listener {
 
-    private static final String MAPS = "com.google.android.apps.maps/com.google.android.maps.MapsActivity";
+    private static final String MAPS = "com.google.android.apps.maps/com.google.android.apps.MapsActivity";
     private static final String EQ = "com.nwd.audioset/.home_horizontalActivity";
     private static final String SETTINGS = "com.android.car.setting/.home_horizontalActivity";
 
@@ -62,6 +62,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
     private TextView fmBand, fmFreq, fmUnit;
     private ImageView art, playBtn;
     private TextView songSource, songTitle, songArtist;
+    private TextView lyricCurrent, lyricNext;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -140,7 +141,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         carBox.addView(car, new FrameLayout.LayoutParams(-1, -1));
         carBox.addView(carLights, new FrameLayout.LayoutParams(-1, -1));
 
-        // Un toque prende/apaga los faros del carro; mantener presionado abre la configuración
         carBox.setOnClickListener(v -> {
             if (hasLightsImage) {
                 manualLights = !currentLightsOn;
@@ -197,7 +197,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         return card;
     }
 
-    /** Recorta el espacio transparente sobrante manteniendo alineadas las 2 fotos (apagado y prendido). */
     private void setTrimmedBundledCars(int resOff, int resOn) {
         try {
             Bitmap bOff = BitmapFactory.decodeResource(getResources(), resOff);
@@ -328,7 +327,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         }
     };
 
-    /** Detecta las luces en NWD, en Gearelec AC8227L (bajada de brillo por cable ILL o modo noche) o de noche. */
     private boolean carLightsOn() {
         int nwdState = Settings.System.getInt(getContentResolver(), "mcu_no_source_device_state", 0);
         if ((nwdState & 2) != 0) return true;
@@ -407,7 +405,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         card.addView(oilInfo, olp);
 
         Ui.pressable(card, 0.97f);
-        // Al tocar cualquier parte de la tarjeta del reloj/aceite se abre la pantalla de Aceite
         card.setOnClickListener(v -> startActivity(new Intent(this, OilActivity.class)));
         return card;
     }
@@ -482,7 +479,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         }
     };
 
-    // ---------- Music (any source) ----------
+    // ---------- Music + Real-time Lyrics ----------
 
     private View buildMusicCard() {
         FrameLayout card = new FrameLayout(this);
@@ -499,7 +496,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
 
         View shade = new View(this);
         shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{0x33000000, 0x00000000, 0xCC100A30}));
+                new int[]{0x44000000, 0x22000000, 0xDD100A30}));
         card.addView(shade, new FrameLayout.LayoutParams(-1, -1));
 
         songSource = Ui.text(this, "MÚSICA", 12, Color.WHITE);
@@ -512,6 +509,30 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
         slp.setMargins(dp(14), dp(14), 0, 0);
         card.addView(songSource, slp);
+
+        // Bloque central para la letra en tiempo real
+        LinearLayout lyricBox = new LinearLayout(this);
+        lyricBox.setOrientation(LinearLayout.VERTICAL);
+        lyricBox.setGravity(Gravity.CENTER);
+        lyricCurrent = Ui.text(this, "", 18, Color.WHITE);
+        lyricCurrent.setTypeface(Typeface.DEFAULT_BOLD);
+        lyricCurrent.setSingleLine(false);
+        lyricCurrent.setMaxLines(3);
+        lyricCurrent.setGravity(Gravity.CENTER);
+        lyricCurrent.setShadowLayer(8f, 0f, 2f, 0xEE000000);
+        lyricBox.addView(lyricCurrent);
+
+        lyricNext = Ui.text(this, "", 14, 0xB3FFFFFF);
+        lyricNext.setSingleLine(false);
+        lyricNext.setMaxLines(2);
+        lyricNext.setGravity(Gravity.CENTER);
+        lyricNext.setPadding(0, dp(6), 0, 0);
+        lyricNext.setShadowLayer(6f, 0f, 1f, 0xCC000000);
+        lyricBox.addView(lyricNext);
+
+        FrameLayout.LayoutParams llp = new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER);
+        llp.setMargins(dp(16), dp(42), dp(16), dp(125));
+        card.addView(lyricBox, llp);
 
         LinearLayout bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.VERTICAL);
@@ -555,20 +576,49 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         songArtist.setText(empty ? "Toca para abrir la música" : t.artist);
         playBtn.setImageResource(t != null && t.playing ? R.drawable.ic_pause : R.drawable.ic_play);
 
+        String[] lyrics = nowPlaying.currentLyrics();
+        boolean hasLyrics = lyrics != null;
+
         if (t != null && t.art != null) {
             art.setPadding(0, 0, 0, 0);
             art.setScaleType(ImageView.ScaleType.CENTER_CROP);
             art.clearColorFilter();
-            art.setAlpha(1f);
+            art.setAlpha(hasLyrics ? 0.40f : 1f);
             art.setImageBitmap(t.art);
         } else {
             art.setPadding(dp(80), dp(56), dp(80), dp(170));
             art.setScaleType(ImageView.ScaleType.FIT_CENTER);
             art.setImageResource(s == NowPlaying.Source.BT ? R.drawable.ic_bluetooth : R.drawable.ic_music);
             art.setColorFilter(Color.WHITE);
-            art.setAlpha(0.25f);
+            art.setAlpha(hasLyrics ? 0.10f : 0.25f);
+        }
+        updateLyricsView(lyrics);
+    }
+
+    private void updateLyricsView(String[] lyrics) {
+        if (lyricCurrent == null || lyricNext == null) return;
+        if (lyrics == null) {
+            lyricCurrent.setText("");
+            lyricNext.setText("");
+        } else {
+            lyricCurrent.setText(lyrics[0]);
+            lyricNext.setText(lyrics[1]);
         }
     }
+
+    private final Runnable lyricPoll = new Runnable() {
+        @Override
+        public void run() {
+            String[] lyrics = nowPlaying.currentLyrics();
+            updateLyricsView(lyrics);
+            NowPlaying.Source s = nowPlaying.current();
+            NowPlaying.Track t = s == null ? null : nowPlaying.track(s);
+            if (t != null && t.art != null) {
+                art.setAlpha(lyrics != null ? 0.40f : 1f);
+            }
+            handler.postDelayed(this, 350);
+        }
+    };
 
     // ---------- Dock ----------
 
@@ -643,13 +693,11 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         }
     }
 
-    /** Busca primero por el nombre exacto de la app e ignora Adobe/PDF/Navegadores. */
     private boolean launchByKeyword(String... keywords) {
         PackageManager pm = getPackageManager();
         Intent main = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
         List<android.content.pm.ResolveInfo> apps = pm.queryIntentActivities(main, 0);
 
-        // 1. Buscar primero coincidencia en el nombre visible de la app
         for (String k : keywords) {
             for (android.content.pm.ResolveInfo ri : apps) {
                 String pkg = ri.activityInfo.packageName.toLowerCase();
@@ -663,7 +711,6 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
             }
         }
 
-        // 2. Si no coincidió el nombre visible, buscar en el nombre del paquete
         for (String k : keywords) {
             for (android.content.pm.ResolveInfo ri : apps) {
                 String pkg = ri.activityInfo.packageName.toLowerCase();
@@ -737,6 +784,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
             requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
         }
         handler.post(periodic);
+        handler.post(lyricPoll);
         if (Profile.isNwd(this)) handler.post(radioPoll);
         nowPlaying.addListener(this);
         onNowPlayingChanged();
@@ -748,6 +796,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
         try { unregisterReceiver(illReceiver); } catch (Exception ignored) { }
         try { getContentResolver().unregisterContentObserver(settingsObserver); } catch (Exception ignored) { }
         handler.removeCallbacks(periodic);
+        handler.removeCallbacks(lyricPoll);
         handler.removeCallbacks(radioPoll);
         nowPlaying.removeListener(this);
     }
