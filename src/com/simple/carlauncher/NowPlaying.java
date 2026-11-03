@@ -12,16 +12,26 @@ import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
- * Tracks what is playing from any source and routes controls back to it:
- * apps with a media session (Spotify, YouTube Music…), the factory USB/SD player
- * (com.android.music.* broadcasts) and Bluetooth audio (com.bt.* broadcasts).
+ * Tracks what is playing from any source, fetches real-time synced lyrics,
+ * and routes controls back to the active media source.
  */
 final class NowPlaying {
 
@@ -41,6 +51,21 @@ final class NowPlaying {
         long updated;
     }
 
+    private static final class LyricLine implements Comparable<LyricLine> {
+        final long timeMs;
+        final String text;
+
+        LyricLine(long timeMs, String text) {
+            this.timeMs = timeMs;
+            this.text = text;
+        }
+
+        @Override
+        public int compareTo(LyricLine o) {
+            return Long.compare(this.timeMs, o.timeMs);
+        }
+    }
+
     private static NowPlaying instance;
 
     static NowPlaying get(Context c) {
@@ -49,6 +74,7 @@ final class NowPlaying {
     }
 
     private final Context ctx;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
     private final Track app = new Track(), local = new Track(), bt = new Track();
     final BtClient btClient = new BtClient();
@@ -56,6 +82,13 @@ final class NowPlaying {
     private final MediaSessionManager sessions;
     private final ComponentName notificationListener;
     private MediaController controller;
+
+    // --- Sincronización de letras (LRCLIB) ---
+    private String currentLyricKey = "";
+    private List<LyricLine> lyricLines = Collections.emptyList();
+    private long fallbackStartRealtime = 0;
+    private long fallbackAccumulatedMs = 0;
+    private boolean fallbackPlaying = false;
 
     private NowPlaying(Context c) {
         ctx = c;
@@ -96,7 +129,6 @@ final class NowPlaying {
             try {
                 handle(a, i);
             } catch (RuntimeException e) {
-                // Factory apps may attach extras we cannot unparcel; never crash the launcher for it.
                 android.util.Log.w("NowPlaying", "Ignoring broadcast " + a, e);
             }
         }
@@ -124,7 +156,7 @@ final class NowPlaying {
                 case "com.bt.ACTION_BT_MUSIC_PAUSE":
                     bt.playing = false;
                     break;
-                default: // A2DP/AVRCP released: phone disconnected
+                default:
                     bt.playing = false;
                     bt.title = "";
                     bt.artist = "";
@@ -185,9 +217,157 @@ final class NowPlaying {
         notifyListeners();
     }
 
+    // ---------- Lyrics (LRCLIB) ----------
+
+    private void updateLyricsState() {
+        Source s = current();
+        Track t = s == null ? null : track(s);
+        if (t == null || t.title.isEmpty()) {
+            currentLyricKey = "";
+            lyricLines = Collections.emptyList();
+            fallbackPlaying = false;
+            fallbackAccumulatedMs = 0;
+            return;
+        }
+        String key = (t.title + "|" + t.artist).toLowerCase().trim();
+        long now = SystemClock.elapsedRealtime();
+        if (!key.equals(currentLyricKey)) {
+            currentLyricKey = key;
+            lyricLines = Collections.emptyList();
+            fallbackAccumulatedMs = 0;
+            fallbackStartRealtime = now;
+            fallbackPlaying = t.playing;
+            fetchLyricsAsync(key, t.title, t.artist);
+        } else {
+            if (t.playing != fallbackPlaying) {
+                if (t.playing) {
+                    fallbackStartRealtime = now;
+                } else {
+                    fallbackAccumulatedMs += (now - fallbackStartRealtime);
+                }
+                fallbackPlaying = t.playing;
+            }
+        }
+    }
+
+    private void fetchLyricsAsync(final String expectedKey, final String title, final String artist) {
+        new Thread(() -> {
+            List<LyricLine> parsed = queryLrclib(title, artist);
+            if (parsed.isEmpty()) {
+                String cleanTitle = cleanTitle(title);
+                if (!cleanTitle.equalsIgnoreCase(title)) {
+                    parsed = queryLrclib(cleanTitle, artist);
+                }
+            }
+            final List<LyricLine> result = parsed;
+            mainHandler.post(() -> {
+                if (expectedKey.equals(currentLyricKey)) {
+                    lyricLines = result;
+                    for (Listener l : new ArrayList<>(listeners)) l.onNowPlayingChanged();
+                }
+            });
+        }).start();
+    }
+
+    private static String cleanTitle(String title) {
+        return title.replaceAll("\\s*\\([^)]*\\)", "")
+                .replaceAll("\\s*\\[[^]]*\\]", "")
+                .replaceAll("\\s*-\\s*.*$", "")
+                .trim();
+    }
+
+    private static List<LyricLine> queryLrclib(String title, String artist) {
+        HttpURLConnection conn = null;
+        try {
+            String urlStr = "https://lrclib.net/api/search?track_name="
+                    + URLEncoder.encode(title, "UTF-8")
+                    + "&artist_name=" + URLEncoder.encode(artist, "UTF-8");
+            conn = (HttpURLConnection) new URL(urlStr).openConnection();
+            conn.setRequestProperty("User-Agent", "CleanLauncher/1.0");
+            conn.setConnectTimeout(6000);
+            conn.setReadTimeout(6000);
+
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+            }
+            JSONArray arr = new JSONArray(sb.toString());
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject obj = arr.getJSONObject(i);
+                String synced = obj.optString("syncedLyrics", "");
+                if (!synced.isEmpty() && !"null".equals(synced)) {
+                    List<LyricLine> lines = parseLrc(synced);
+                    if (!lines.isEmpty()) return lines;
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return Collections.emptyList();
+    }
+
+    private static List<LyricLine> parseLrc(String lrc) {
+        List<LyricLine> list = new ArrayList<>();
+        String[] rows = lrc.split("\\r?\\n");
+        for (String row : rows) {
+            int open = row.indexOf('[');
+            int close = row.indexOf(']');
+            if (open < 0 || close <= open) continue;
+            String stamp = row.substring(open + 1, close).trim();
+            int colon = stamp.indexOf(':');
+            if (colon <= 0) continue;
+            try {
+                long min = Long.parseLong(stamp.substring(0, colon).trim());
+                double sec = Double.parseDouble(stamp.substring(colon + 1).replace(',', '.').trim());
+                long ms = min * 60000L + Math.round(sec * 1000.0);
+                String text = row.substring(close + 1).trim();
+                if (text.isEmpty()) text = "♪  ♪  ♪";
+                list.add(new LyricLine(ms, text));
+            } catch (NumberFormatException ignored) { }
+        }
+        Collections.sort(list);
+        return list;
+    }
+
+    private long currentPositionMs() {
+        Source s = current();
+        if (s == Source.APP && controller != null) {
+            PlaybackState ps = controller.getPlaybackState();
+            if (ps != null && ps.getPosition() != PlaybackState.PLAYBACK_POSITION_UNKNOWN) {
+                long pos = ps.getPosition();
+                if (ps.getState() == PlaybackState.STATE_PLAYING && ps.getLastPositionUpdateTime() > 0) {
+                    float speed = ps.getPlaybackSpeed() > 0f ? ps.getPlaybackSpeed() : 1f;
+                    pos += (long) ((SystemClock.elapsedRealtime() - ps.getLastPositionUpdateTime()) * speed);
+                }
+                if (pos >= 0) return pos;
+            }
+        }
+        long extra = fallbackPlaying ? (SystemClock.elapsedRealtime() - fallbackStartRealtime) : 0;
+        return fallbackAccumulatedMs + extra;
+    }
+
+    /** Devuelve [versoActual, siguienteVerso] o null si la canción no tiene letra sincronizada. */
+    String[] currentLyrics() {
+        List<LyricLine> lines = lyricLines;
+        if (lines == null || lines.isEmpty()) return null;
+        long pos = currentPositionMs() + 250; // ligero adelanto visual
+        int idx = -1;
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines.get(i).timeMs <= pos) idx = i;
+            else break;
+        }
+        if (idx < 0) {
+            return new String[]{"♪  ♪  ♪", lines.get(0).text};
+        }
+        String curr = lines.get(idx).text;
+        String next = (idx + 1 < lines.size()) ? lines.get(idx + 1).text : "";
+        return new String[]{curr, next};
+    }
+
     // ---------- Public API ----------
 
-    /** The source to show: whatever is playing (most recent first), else the last one used. */
     Source current() {
         Source best = null;
         long bestTime = -1;
@@ -223,7 +403,6 @@ final class NowPlaying {
         Source s = current();
         if (s == Source.BT) {
             if (Ui.radioIsSource(ctx)) {
-                // Radio has the speakers (the phone may even be playing muted): bring Bluetooth in.
                 Ui.userChoseRadioAt = 0;
                 Ui.selectBluetooth(ctx);
                 btClient.playControl(BtClient.PLAY);
@@ -250,7 +429,6 @@ final class NowPlaying {
         }
     }
 
-    /** Opens the screen that belongs to the current source. */
     void open(Context c) {
         Source s = current();
         if (s == Source.BT) {
@@ -274,6 +452,7 @@ final class NowPlaying {
     }
 
     private void notifyListeners() {
+        updateLyricsState();
         for (Listener l : new ArrayList<>(listeners)) l.onNowPlayingChanged();
     }
 
