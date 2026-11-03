@@ -3,6 +3,7 @@ package com.simple.carlauncher;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.ContentObserver;
@@ -609,7 +610,7 @@ public class MainActivity extends Activity implements NowPlaying.Listener {
             nowPlaying.open(this);
             return;
         }
-        if (!launchByKeyword("música", "musica", "music", "spotify", "reproductor", "player", "audio")) {
+        if (!launchByKeyword("música", "musica", "music", "spotify", "youtube", "reproductor", "player", "audio")) {
             nowPlaying.open(this);
         }
     }
