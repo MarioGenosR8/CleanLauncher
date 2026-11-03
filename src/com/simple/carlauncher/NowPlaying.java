@@ -12,6 +12,7 @@ import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -21,16 +22,20 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 /**
- * Tracks what is playing from any source, fetches real-time synced lyrics,
+ * Tracks what is playing from any source, manages offline/online synced lyrics (.lrc),
  * and routes controls back to the active media source.
  */
 final class NowPlaying {
@@ -83,7 +88,7 @@ final class NowPlaying {
     private final ComponentName notificationListener;
     private MediaController controller;
 
-    // --- Sincronización de letras (LRCLIB) ---
+    // --- Sincronización y Caché Offline de letras (LRCLIB + Memoria Interna) ---
     private String currentLyricKey = "";
     private List<LyricLine> lyricLines = Collections.emptyList();
     private long fallbackStartRealtime = 0;
@@ -217,7 +222,7 @@ final class NowPlaying {
         notifyListeners();
     }
 
-    // ---------- Lyrics (LRCLIB) ----------
+    // ---------- Lyrics (Offline Cache + LRCLIB) ----------
 
     private void updateLyricsState() {
         Source s = current();
@@ -252,13 +257,27 @@ final class NowPlaying {
 
     private void fetchLyricsAsync(final String expectedKey, final String title, final String artist) {
         new Thread(() -> {
-            List<LyricLine> parsed = queryLrclib(title, artist);
+            // 1. Buscar primero en la memoria interna del estéreo (Offline)
+            String rawLrc = loadCachedLrc(title, artist);
+            List<LyricLine> parsed = rawLrc != null ? parseLrc(rawLrc) : Collections.emptyList();
+
+            // 2. Si no está guardada aún, descargar de internet y guardarla para siempre
             if (parsed.isEmpty()) {
-                String cleanTitle = cleanTitle(title);
-                if (!cleanTitle.equalsIgnoreCase(title)) {
-                    parsed = queryLrclib(cleanTitle, artist);
+                String downloaded = queryLrclibRaw(title, artist);
+                if (downloaded == null) {
+                    String clean = cleanTitle(title);
+                    if (!clean.equalsIgnoreCase(title)) {
+                        downloaded = queryLrclibRaw(clean, artist);
+                    }
+                }
+                if (downloaded != null) {
+                    parsed = parseLrc(downloaded);
+                    if (!parsed.isEmpty()) {
+                        saveCachedLrc(title, artist, downloaded);
+                    }
                 }
             }
+
             final List<LyricLine> result = parsed;
             mainHandler.post(() -> {
                 if (expectedKey.equals(currentLyricKey)) {
@@ -269,6 +288,58 @@ final class NowPlaying {
         }).start();
     }
 
+    private File getLyricsCacheDir() {
+        File dir = new File(ctx.getFilesDir(), "lyrics_cache");
+        if (!dir.exists()) dir.mkdirs();
+        return dir;
+    }
+
+    private static String safeFileName(String title, String artist) {
+        String raw = (cleanTitle(title) + "_" + artist).toLowerCase().trim();
+        return raw.replaceAll("[^a-z0-9áéíóúñü_-]", "_") + ".lrc";
+    }
+
+    private String loadCachedLrc(String title, String artist) {
+        // Revisar caché interna de la app
+        File cached = new File(getLyricsCacheDir(), safeFileName(title, artist));
+        if (cached.exists()) {
+            String content = readFileText(cached);
+            if (content != null && !content.isEmpty()) return content;
+        }
+        // Revisar si el usuario metió archivos .lrc en la carpeta /sdcard/Lyrics
+        try {
+            File extDir = new File(Environment.getExternalStorageDirectory(), "Lyrics");
+            if (extDir.exists() && extDir.isDirectory()) {
+                File f1 = new File(extDir, artist + " - " + title + ".lrc");
+                if (f1.exists()) return readFileText(f1);
+                File f2 = new File(extDir, title + ".lrc");
+                if (f2.exists()) return readFileText(f2);
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    private void saveCachedLrc(String title, String artist, String lrcContent) {
+        File cached = new File(getLyricsCacheDir(), safeFileName(title, artist));
+        try (FileOutputStream fos = new FileOutputStream(cached)) {
+            fos.write(lrcContent.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) { }
+    }
+
+    private static String readFileText(File f) {
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private static String cleanTitle(String title) {
         return title.replaceAll("\\s*\\([^)]*\\)", "")
                 .replaceAll("\\s*\\[[^]]*\\]", "")
@@ -276,7 +347,7 @@ final class NowPlaying {
                 .trim();
     }
 
-    private static List<LyricLine> queryLrclib(String title, String artist) {
+    private static String queryLrclibRaw(String title, String artist) {
         HttpURLConnection conn = null;
         try {
             String urlStr = "https://lrclib.net/api/search?track_name="
@@ -284,11 +355,12 @@ final class NowPlaying {
                     + "&artist_name=" + URLEncoder.encode(artist, "UTF-8");
             conn = (HttpURLConnection) new URL(urlStr).openConnection();
             conn.setRequestProperty("User-Agent", "CleanLauncher/1.0");
-            conn.setConnectTimeout(6000);
-            conn.setReadTimeout(6000);
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
 
             StringBuilder sb = new StringBuilder();
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = br.readLine()) != null) sb.append(line);
             }
@@ -297,15 +369,14 @@ final class NowPlaying {
                 JSONObject obj = arr.getJSONObject(i);
                 String synced = obj.optString("syncedLyrics", "");
                 if (!synced.isEmpty() && !"null".equals(synced)) {
-                    List<LyricLine> lines = parseLrc(synced);
-                    if (!lines.isEmpty()) return lines;
+                    return synced;
                 }
             }
         } catch (Exception ignored) {
         } finally {
             if (conn != null) conn.disconnect();
         }
-        return Collections.emptyList();
+        return null;
     }
 
     private static List<LyricLine> parseLrc(String lrc) {
@@ -352,7 +423,7 @@ final class NowPlaying {
     String[] currentLyrics() {
         List<LyricLine> lines = lyricLines;
         if (lines == null || lines.isEmpty()) return null;
-        long pos = currentPositionMs() + 250; // ligero adelanto visual
+        long pos = currentPositionMs() + 250;
         int idx = -1;
         for (int i = 0; i < lines.size(); i++) {
             if (lines.get(i).timeMs <= pos) idx = i;
